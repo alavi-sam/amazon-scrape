@@ -1,2 +1,2 @@
-# open-scrape
-An open source modules for building web scrapers.
+# Amazon-Scraper
+An open source modules for building web scrapers for Amazon.

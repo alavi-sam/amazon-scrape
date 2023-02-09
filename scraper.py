@@ -6,6 +6,11 @@ import random
 import json
 import bs4
 import pandas as pd
+import selenium
+from selenium.webdriver import Chrome
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+# from selenium.logging
 
 
 class Request:
@@ -26,6 +31,30 @@ class Request:
         return requests.get(link, headers=headers, allow_redirects=True)
 
 
+class SeleniumRequest:
+    options = Options()
+    options.add_argument('--headless')
+    options.add_argument('--disable-gpu')
+    browser = Chrome(executable_path='chromedriver.exe', options=options)
+
+    def create_request(self, link):
+        self.browser.get(link)
+
+    @staticmethod
+    def get_status(logs):
+        for log in logs:
+            if log['message']:
+                d = json.loads(log['message'])
+                try:
+                    content_type = 'text/html' in d['message']['params']['response']['headers']['content-type']
+                    response_received = d['message']['method'] == 'Network.responseReceived'
+                    if content_type and response_received:
+                        return d['message']['params']['response']['status']
+                    pass
+                except:
+                    pass
+
+
 class RequestFailedException(Exception):
     pass
 
@@ -38,11 +67,15 @@ class AmazonScraper:
         'Women Shoes': 'https://www.amazon.com/s?i=specialty-aps&bbn=16225018011&rh=n%3A7141123011%2Cn%3A16225018011%2Cn%3A679337011&ref=nav_em__nav_desktop_sa_intl_shoes_0_2_12_3'
     }
 
-    request = Request()
+    # request = Request()
 
     page = 1
 
-    def __init__(self, item_container, url, img_src, title, number_of_purchase, rating):
+    def __init__(self, item_container, url, img_src, title, number_of_purchase, rating, request_type='selenium'):
+        if request_type == 'selenium':
+            self.request = SeleniumRequest()
+        elif request_type == 'requests':
+            self.request = Request()
         self.item_container = item_container
         self.url = url
         self.img_src = img_src
@@ -54,15 +87,28 @@ class AmazonScraper:
         self.page_number = 1
 
     def start_request(self, link):
-        response = self.request.create_request(link=link)
-        self.current_url = response.url
-        if response.status_code == 200:
-            return response
-        else:
-            raise RequestFailedException('request failed with status code %d' % response.status_code)
+        if isinstance(self.request, Request):
+            response = self.request.create_request(link=link)
+            if response.status_code == 200:
+                self.current_url = response.url
+                return response
+            else:
+                raise RequestFailedException('request failed with status code %d' % response.status_code)
+        elif isinstance(self.request, SeleniumRequest):
+            self.request.create_request(link)
+            logs = self.request.browser.get_log('browser')
+            status_code = self.request.get_status(logs)
+            self.current_url = self.request.browser.current_url
+            if status_code == 200:
+                return self.request.browser
 
     def get_items(self, response):
-        parser = BeautifulSoup(response.content, 'html.parser')
+        if isinstance(self.request, Request):
+            parser = BeautifulSoup(response.content, 'html.parser')
+        elif isinstance(self.request, SeleniumRequest):
+            parser = BeautifulSoup(self.request.browser.page_source, 'html.parser')
+        else:
+            raise 'Unknown request'
         items = parser.find_all(self.item_container["tag"], class_=self.item_container["class"],
                                 id_=self.item_container["id"])
         if len(items) == 0:
@@ -107,9 +153,9 @@ class AmazonScraper:
                 except ValueError:
                     continue
 
-        ratings = item.find(self.rating["tag"], class_=self.rating["tag"], id_=self.rating["id"])
+        ratings = item.find(self.rating["tag"], class_=self.rating["class"], id_=self.rating["id"])
         if not ratings:
-            ratings = item.find(self.rating["tag"], class_=self.rating["class2"],)
+            ratings = item.find(self.rating["tag"], class_=self.rating["class2"])
         if ratings:
             return get_float(ratings.text)
         else:
@@ -167,7 +213,7 @@ categoryLinks = {
 }
 
 
-def start_scrape(links: dict):
+def start_scrape(links: dict, request='selenium'):
     item_container = {"tag": "div", "class": "sg-col-4-of-24 sg-col-4-of-12 s-result-item s-asin sg-col-4-of-16"
                                              " sg-col s-widget-spacing-small sg-col-4-of-20", "class2": "s-result-item"
                                                     " s-asin sg-col s-widget-spacing-small sg-col-6-of-12", "id": ""}
@@ -183,7 +229,8 @@ def start_scrape(links: dict):
     for key, value in links.items():
         c = 0
         df = pd.DataFrame(columns=['url', 'img_src', 'title', 'number_of_purchases', 'ratings'])
-        scraper = AmazonScraper(item_container, url, img_src, title, number_of_purchases, ratings)
+        scraper = AmazonScraper(item_container, url, img_src, title, number_of_purchases, ratings,
+                                request_type=request)
         response = scraper.start_request(value)
         while True:
             items = scraper.get_items(response)
@@ -200,14 +247,16 @@ def start_scrape(links: dict):
                 df = pd.concat([df, df_new], ignore_index=True).reset_index(drop=True)
                 c += 1
             df.to_csv(f'{key}.csv')
+            # if c > 50:
+            #     break
             if scraper.page_number != c//48:
                 print()
             print(f'from category {key} scraped {c} numbers of items from page {scraper.page_number}.')
-            scraper.time_sleep(3)
+            scraper.time_sleep(8)
             response = scraper.next_page()
-            print(response.status_code)
-            if not response:
-                break
+            # print(response.status_code)
+            # if not response:
+            #     break
 
 
 start_scrape(categoryLinks)

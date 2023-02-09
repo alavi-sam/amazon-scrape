@@ -3,3 +3,5 @@
 ScrapeItems.json
 chromedriver.exe
 Men clothing.csv
+*.xlsx
+*.csv
